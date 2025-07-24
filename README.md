@@ -1,1 +1,1 @@
-# weather-demo-app
+# Weather Aggregation Service
