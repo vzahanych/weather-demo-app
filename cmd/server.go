@@ -2,14 +2,12 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vzahanych/weather-demo-app/internal/config"
 	"github.com/vzahanych/weather-demo-app/internal/server"
-	"github.com/vzahanych/weather-demo-app/pkg/logger"
-	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
+	"go.uber.org/zap"
 )
 
 var (
@@ -27,40 +25,12 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
+	cfg := config.GetConfig()
 
-	if globalLogger != nil {
-		globalLogger.Sync()
-	}
-
-	logger, err := logger.New(cfg.Logging)
-	if err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
-	}
-	defer logger.Sync()
-
-	if globalTelemetry != nil {
-		globalTelemetry.Shutdown(context.Background())
-	}
-
-	tel, err := telemetry.New(cfg.Telemetry)
-	if err != nil {
-		logger.Warn("Failed to initialize telemetry", "error", err)
-	} else {
-		defer func() {
-			if err := tel.Shutdown(context.Background()); err != nil {
-				logger.Error("Failed to shutdown telemetry", "error", err)
-			}
-		}()
-	}
-
-	logger.Info("Starting weather aggregation server",
-		"config_path", configPath,
-		"telemetry_enabled", cfg.Telemetry.Enabled,
-		"server_port", cfg.Server.Port)
+	log.Info("Starting weather aggregation server",
+		zap.String("config_path", configPath),
+		zap.Bool("telemetry_enabled", cfg.Telemetry.Enabled),
+		zap.Int("server_port", cfg.Server.Port))
 
 	srv := server.NewServer()
 
@@ -73,20 +43,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	select {
 	case err := <-errChan:
-		logger.Error("Server error", "error", err)
+		log.Error("Server error", zap.Error(err))
 		return err
 	case <-cmd.Context().Done():
-		logger.Info("Shutting down server")
+		log.Info("Shutting down server")
 
 		_, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
 		if err := srv.Shutdown(); err != nil {
-			logger.Error("Error during server shutdown", "error", err)
+			log.Error("Error during server shutdown", zap.Error(err))
 			return err
 		}
 
-		logger.Info("Server shutdown complete")
+		log.Info("Server shutdown complete")
 		return nil
 	}
 }

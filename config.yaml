@@ -1,1 +1,55 @@
- 
+version: "1.0"
+environment: "development"
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 30
+  write_timeout: 30
+  idle_timeout: 60
+
+weather:
+  timeout: 10
+  retries: 3
+  cache_ttl: 300
+  services:
+    open-meteo:
+      type: "open-meteo"
+      enabled: true
+      base_url: "https://api.open-meteo.com/v1"
+      params:
+        daily: "temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode"
+    
+    weather-api:
+      type: "weather-api"
+      enabled: false
+      base_url: "https://api.weatherapi.com/v1"
+      api_key: ""  # Set your API key here
+      params:
+        format: "json"
+    
+    # accuweather:
+    #   type: "accuweather"
+    #   enabled: true
+    #   base_url: "https://dataservice.accuweather.com"
+    #   api_key: "your-accuweather-api-key"
+    #   params:
+    #     language: "en-us"
+    #     details: "true"
+    
+    # tomorrow-io:
+    #   type: "tomorrow-io"
+    #   enabled: false
+    #   base_url: "https://api.tomorrow.io/v4"
+    #   api_key: "your-tomorrow-io-api-key"
+    #   params:
+    #     units: "metric"
+
+logging:
+  level: "info"
+  format: "json"
+  output_path: ""
+
+telemetry:
+  enabled: false
+  endpoint: "tempo:4317" 

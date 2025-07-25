@@ -1,0 +1,51 @@
+Senior Golang Developer technical test
+We would like you to create a simple HTTP server that aggregates weather data from multiple sources.
+
+Task Description
+Your task is to develop a lightweight HTTP server in Golang. The server should query two different weather APIs and aggregate the responses into a single output. Each API should return a 5-day weather forecast. The focus of this task is clean, extendable code that supports the addition of new APIs in the future.
+
+Requirements
+1. Weather APIs to integrate:
+
+a. Open-Meteo API
+b. WeatherAPI
+c. You may use different APIs if you wish; we recommend these two, as Open-Meteo doesn't require API key and their usage is quite similar
+2. HTTP Endpoint:
+
+a. GET /weather
+b. The endpoint should accept two query parameters: lat (latitude) and lon (longitude), which represent the geographical coordinates.
+3. Data Aggregation:
+
+a. The server should fetch 5-day weather forecasts from each API.
+b. After fetching the 5 days of data from each API, aggregate the responses and return them in a single JSON response in the following format:
+{
+  "weatherAPI1": {
+    "day1": {...},
+    "day2": {...},
+    ...
+  },
+  "weatherAPI2": {
+    "day1": {...},
+    "day2": {...},
+    ...
+  }
+}
+4. Example API Calls:
+
+a. Open-Meteo (single day):
+https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&start_date=2024-10-15&end_date=2024-10-15&daily=temperature_2m_max
+b. WeatherAPI (single day):
+https://api.weatherapi.com/v1/forecast.json?key={API_KEY}&q=44.34,10.99&date=2024-10-15&day=maxtemp_c
+c. Note: WeatherAPI requires account registration to obtain an API key.
+5. Concurrency:
+
+Each day’s forecast (for the 5-day forecast) should be fetched using a separate goroutine to demonstrate your ability to handle concurrency in Go.
+6. Expected Output:
+
+The HTTP server should return the aggregated data as JSON with appropriate headers set for a successful response.
+Evaluation Criteria
+Code quality, structure, and clarity
+Abstraction and extensibility (ability to add more weather services easily)
+Proper validation of input parameters
+Proper error handling and concurrency management
+Efficient API calls and data aggregation

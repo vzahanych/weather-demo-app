@@ -6,7 +6,7 @@ import (
 )
 
 type Logger struct {
-	*zap.SugaredLogger
+	*zap.Logger
 }
 
 func New(cfg config.LoggingConfig) (*Logger, error) {
@@ -14,19 +14,19 @@ func New(cfg config.LoggingConfig) (*Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Logger{logger.Sugar()}, nil
+	return &Logger{logger}, nil
 }
 
 func NewDevelopment() *Logger {
 	logger, _ := zap.NewDevelopment()
-	return &Logger{logger.Sugar()}
+	return &Logger{logger}
 }
 
 func NewProduction() *Logger {
 	logger, _ := zap.NewProduction()
-	return &Logger{logger.Sugar()}
+	return &Logger{logger}
 }
 
 func (l *Logger) Sync() error {
-	return l.SugaredLogger.Sync()
+	return l.Logger.Sync()
 }

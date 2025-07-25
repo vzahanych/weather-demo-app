@@ -24,25 +24,23 @@ type Telemetry struct {
 	provider *sdktrace.TracerProvider
 }
 
-func New(cfg config.TelemetryConfig) (*Telemetry, error) {
+func New(ctx context.Context, cfg config.TelemetryConfig) (*Telemetry, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	
 	t := &Telemetry{
 		enabled: cfg.Enabled,
-	}
+	}	
 
-	if !cfg.Enabled {
-		return t, nil
-	}
-
-	if err := t.initTracer(cfg.Endpoint); err != nil {
+	if err := t.initTracer(ctx,cfg.Endpoint); err != nil {
 		return nil, fmt.Errorf("failed to initialize tracer: %w", err)
 	}
 
 	return t, nil
 }
 
-func (t *Telemetry) initTracer(endpoint string) error {
-	ctx := context.Background()
-
+func (t *Telemetry) initTracer(ctx context.Context, endpoint string) error {
 	conn, err := grpc.DialContext(ctx, endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
