@@ -14,6 +14,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -25,15 +26,16 @@ type Telemetry struct {
 }
 
 func New(ctx context.Context, cfg config.TelemetryConfig) (*Telemetry, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
-	
 	t := &Telemetry{
 		enabled: cfg.Enabled,
-	}	
+	}
 
-	if err := t.initTracer(ctx,cfg.Endpoint); err != nil {
+	if !cfg.Enabled {
+		return t, nil
+	}
+
+	// Initialize tracing
+	if err := t.initTracer(ctx, cfg.Endpoint); err != nil {
 		return nil, fmt.Errorf("failed to initialize tracer: %w", err)
 	}
 
@@ -101,6 +103,20 @@ func (t *Telemetry) StartSpanWithAttributes(ctx context.Context, name string, at
 	return ctx, func() {
 		span.End()
 	}
+}
+
+func (t *Telemetry) IsEnabled() bool {
+	if t == nil {
+		return false
+	}
+	return t.enabled
+}
+
+func (t *Telemetry) GetTracer() trace.Tracer {
+	if t == nil || !t.enabled || t.tracer == nil {
+		return noop.NewTracerProvider().Tracer("noop")
+	}
+	return t.tracer
 }
 
 func (t *Telemetry) RecordMetric(name string, value float64, labels map[string]string) {

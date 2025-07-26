@@ -1,13 +1,9 @@
 package config
 
 import (
-	"fmt"
 	"sync/atomic"
 )
 
-// Keeping config in an atomic value allows
-// more advanced feature later, like changing config dynamically without downtime
-// useful in critical systems
 var configValue atomic.Value
 
 func GetConfig() *Config {
@@ -63,6 +59,8 @@ type TelemetryConfig struct {
 
 func NewDefaultConfig() *Config {
 	return &Config{
+		Version:     "1.0.0",
+		Environment: "development",
 		Server: ServerConfig{
 			Port:         8080,
 			Host:         "0.0.0.0",
@@ -104,33 +102,4 @@ func NewDefaultConfig() *Config {
 			Endpoint: "tempo:4317",
 		},
 	}
-}
-
-func (wc *WeatherConfig) GetEnabledServices() map[string]WeatherServiceConfig {
-	enabled := make(map[string]WeatherServiceConfig)
-	for name, service := range wc.Services {
-		if service.Enabled {
-			enabled[name] = service
-		}
-	}
-	return enabled
-}
-
-func (wc *WeatherConfig) GetService(name string) (WeatherServiceConfig, error) {
-	service, exists := wc.Services[name]
-	if !exists {
-		return WeatherServiceConfig{}, fmt.Errorf("service %s not found", name)
-	}
-	return service, nil
-}
-
-func (wc *WeatherConfig) AddService(name string, config WeatherServiceConfig) {
-	if wc.Services == nil {
-		wc.Services = make(map[string]WeatherServiceConfig)
-	}
-	wc.Services[name] = config
-}
-
-func (wc *WeatherConfig) RemoveService(name string) {
-	delete(wc.Services, name)
 }

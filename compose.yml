@@ -1,0 +1,146 @@
+
+networks:
+  weather-demo-app:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.50.8.0/24
+          gateway: 172.50.8.1
+
+services:
+  # Weather Demo App
+  weather-app:
+    build: .
+    container_name: weather-demo-app
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.10
+    ports:
+      - "8080:8080"
+    environment:
+      - WDP_TELEMETRY_ENABLED=true
+      - WDP_TELEMETRY_ENDPOINT=tempo:4317
+    depends_on:
+      - tempo
+      - loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus - Metrics collection and storage
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: weather-demo-app-prometheus
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.19
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./data/prometheus:/prometheus
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - weather-app
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: weather-demo-app-grafana
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.17
+    ports:
+      - "3001:3000"  # Grafana Web UI (avoiding conflict with Attu)
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - loki
+      - tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  # Loki - Log aggregation system
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: weather-demo-app-loki
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.15
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./data/loki:/loki
+      - ./config/loki-config.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  # Promtail - Log shipper for Loki  
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: weather-demo-app-promtail
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.16
+    volumes:
+      - ./config/promtail-config.yml:/etc/promtail/config.yml
+      - ./data/logs:/logs/kw3e:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  # Tempo - Distributed tracing backend
+  tempo:
+    image: grafana/tempo:2.3.1
+    container_name: weather-demo-app-tempo
+    restart: unless-stopped
+    networks:
+      weather-demo-app:
+        ipv4_address: 172.50.8.18
+    ports:
+      - "3200:3200"   # Tempo HTTP API
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+    volumes:
+      - ./data/tempo:/tmp/tempo
+      - ./config/tempo-config.yml:/etc/tempo/tempo.yaml
+    command: -config.file=/etc/tempo/tempo.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3200/ready || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+ 

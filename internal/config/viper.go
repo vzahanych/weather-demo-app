@@ -8,21 +8,26 @@ import (
 	"github.com/spf13/viper"
 )
 
-func LoadConfig() (*Config, error) {
+func Load(configPath string) (*Config, error) {
 	cfg := NewDefaultConfig()
 
 	v := viper.New()
-	v.SetConfigName("config")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	v.SetEnvPrefix("WDP") // custom prefix for application env variables
+
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		v.AddConfigPath(".")
+	}
+
+	v.SetEnvPrefix("WDP")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	SetDefaultsFromStructRecursive(reflect.ValueOf(cfg), "", v)
 
 	v.AutomaticEnv()
 
-	// Try to read the config file (ignore if not present)
 	err := v.ReadInConfig()
 	if err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)

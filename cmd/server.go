@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vzahanych/weather-demo-app/internal/config"
 	"github.com/vzahanych/weather-demo-app/internal/server"
+	"github.com/vzahanych/weather-demo-app/pkg/logger"
+	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -14,49 +16,58 @@ var (
 	configPath string
 	serverCmd  = &cobra.Command{
 		Use:   "server",
-		Short: "Start the weather aggregation server",
-		Long:  `Start the HTTP server that aggregates weather data from multiple sources with caching and observability.`,
+		Short: "Start the weather server",
 		RunE:  runServer,
 	}
 )
 
 func init() {
-	serverCmd.Flags().StringVarP(&configPath, "config", "c", "", "path to configuration file (default: ./config.yaml)")
+	serverCmd.Flags().StringVarP(&configPath, "config", "c", "", "config file path")
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
-	cfg := config.GetConfig()
+	cfg := config.NewDefaultConfig()
+	if configPath != "" {
+		if loadedCfg, err := config.Load(configPath); err == nil {
+			cfg = loadedCfg
+		}
+	}
+	config.SetConfig(cfg)
 
-	log.Info("Starting weather aggregation server",
-		zap.String("config_path", configPath),
-		zap.Bool("telemetry_enabled", cfg.Telemetry.Enabled),
-		zap.Int("server_port", cfg.Server.Port))
+	logger, err := logger.NewZapLogger(cfg.Logging)
+	if err != nil {
+		return err
+	}
+	defer logger.Sync()
 
-	srv := server.NewServer()
+	logger.Info("Starting server", zap.Int("port", cfg.Server.Port))
+
+	tele, err := telemetry.New(cmd.Context(), cfg.Telemetry)
+	if err != nil {
+		logger.Error("Failed to initialize telemetry", zap.Error(err))
+		return err
+	}
+	defer tele.Shutdown(cmd.Context())
+
+	srv := server.NewServer(logger, tele)
 
 	errChan := make(chan error, 1)
 	go func() {
-		if err := srv.Start(); err != nil {
-			errChan <- err
-		}
+		errChan <- srv.Start()
 	}()
 
 	select {
 	case err := <-errChan:
-		log.Error("Server error", zap.Error(err))
 		return err
 	case <-cmd.Context().Done():
-		log.Info("Shutting down server")
+		logger.Info("Shutting down")
 
-		_, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer shutdownCancel()
+		_, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
 		if err := srv.Shutdown(); err != nil {
-			log.Error("Error during server shutdown", zap.Error(err))
-			return err
+			logger.Error("Shutdown error", zap.Error(err))
 		}
-
-		log.Info("Server shutdown complete")
 		return nil
 	}
 }

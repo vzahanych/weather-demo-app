@@ -3,30 +3,46 @@ package logger
 import (
 	"github.com/vzahanych/weather-demo-app/internal/config"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-type Logger struct {
-	*zap.Logger
-}
+func NewZapLogger(cfg config.LoggingConfig) (*zap.Logger, error) {
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:        "ts",
+		LevelKey:       "l",
+		NameKey:        "logger",
+		CallerKey:      "c",
+		MessageKey:     "msg",
+		StacktraceKey:  "stack",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     zapcore.RFC3339TimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	}
 
-func New(cfg config.LoggingConfig) (*Logger, error) {
-	logger, err := zap.NewProduction()
+	config := zap.Config{
+		Level:            zap.NewAtomicLevelAt(zap.ErrorLevel),
+		Development:      false,
+		Encoding:         "json",
+		EncoderConfig:    encoderConfig,
+		OutputPaths:      []string{"stdout"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
+
+	switch cfg.Level {
+	case "debug":
+		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	case "info":
+		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	case "warn":
+		config.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
+	}
+
+	logger, err := config.Build()
 	if err != nil {
 		return nil, err
 	}
-	return &Logger{logger}, nil
-}
 
-func NewDevelopment() *Logger {
-	logger, _ := zap.NewDevelopment()
-	return &Logger{logger}
-}
-
-func NewProduction() *Logger {
-	logger, _ := zap.NewProduction()
-	return &Logger{logger}
-}
-
-func (l *Logger) Sync() error {
-	return l.Logger.Sync()
+	return logger, nil
 }

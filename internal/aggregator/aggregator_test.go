@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/vzahanych/weather-demo-app/internal/config"
+	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
+	"go.uber.org/zap"
 )
 
 func TestNewAggregator(t *testing.T) {
@@ -19,7 +21,10 @@ func TestNewAggregator(t *testing.T) {
 		},
 	}
 
-	agg := NewAggregator(cfg)
+	logger, _ := zap.NewDevelopment()
+	tele := &telemetry.Telemetry{}
+
+	agg := NewAggregator(cfg, logger, tele)
 	if agg == nil {
 		t.Fatal("NewAggregator returned nil")
 	}
@@ -39,7 +44,10 @@ func TestAggregatorCache(t *testing.T) {
 		Services: map[string]config.WeatherServiceConfig{},
 	}
 
-	agg := NewAggregator(cfg)
+	logger, _ := zap.NewDevelopment()
+	tele := &telemetry.Telemetry{}
+
+	agg := NewAggregator(cfg, logger, tele)
 
 	cacheKey := "52.520000,13.410000"
 
@@ -47,7 +55,7 @@ func TestAggregatorCache(t *testing.T) {
 		t.Error("Cache should be empty initially")
 	}
 
-	testData := &AggregatedWeatherData{
+	testData := &WeatherData{
 		Services:  make(map[string]interface{}),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -70,11 +78,14 @@ func TestAggregatorCacheExpiration(t *testing.T) {
 		Services: map[string]config.WeatherServiceConfig{},
 	}
 
-	agg := NewAggregator(cfg)
+	logger, _ := zap.NewDevelopment()
+	tele := &telemetry.Telemetry{}
+
+	agg := NewAggregator(cfg, logger, tele)
 
 	cacheKey := "52.520000,13.410000"
 
-	testData := &AggregatedWeatherData{
+	testData := &WeatherData{
 		Services:  make(map[string]interface{}),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -95,7 +106,10 @@ func TestAggregatorGetCacheStats(t *testing.T) {
 		Services: map[string]config.WeatherServiceConfig{},
 	}
 
-	agg := NewAggregator(cfg)
+	logger, _ := zap.NewDevelopment()
+	tele := &telemetry.Telemetry{}
+
+	agg := NewAggregator(cfg, logger, tele)
 
 	stats := agg.GetCacheStats()
 	if stats["cache_size"] != 0 {
@@ -107,103 +121,33 @@ func TestAggregatorGetCacheStats(t *testing.T) {
 	}
 }
 
-func TestAggregatedWeatherDataHelpers(t *testing.T) {
+func TestWeatherDataBasic(t *testing.T) {
 	// Test with empty data
-	emptyData := &AggregatedWeatherData{
+	emptyData := &WeatherData{
 		Services:  make(map[string]interface{}),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if emptyData.HasService("open-meteo") {
+	if len(emptyData.Services) != 0 {
 		t.Error("Empty data should not have any services")
 	}
 
-	services := emptyData.GetAvailableServices()
-	if len(services) != 0 {
-		t.Errorf("Expected 0 services, got %d", len(services))
-	}
-
-	_, exists := emptyData.GetServiceData("open-meteo")
-	if exists {
-		t.Error("Should not find service data for non-existent service")
-	}
-
 	// Test with populated data
-	populatedData := &AggregatedWeatherData{
+	populatedData := &WeatherData{
 		Services: map[string]interface{}{
 			"open-meteo": map[string]interface{}{
 				"temperature": 20.5,
 				"humidity":    65,
 			},
-			"weather-api": map[string]interface{}{
-				"temp": 22.0,
-				"hum":  60,
-			},
 		},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if !populatedData.HasService("open-meteo") {
+	if len(populatedData.Services) != 1 {
+		t.Errorf("Expected 1 service, got %d", len(populatedData.Services))
+	}
+
+	if _, exists := populatedData.Services["open-meteo"]; !exists {
 		t.Error("Should have open-meteo service")
-	}
-
-	if !populatedData.HasService("weather-api") {
-		t.Error("Should have weather-api service")
-	}
-
-	if populatedData.HasService("non-existent") {
-		t.Error("Should not have non-existent service")
-	}
-
-	services = populatedData.GetAvailableServices()
-	if len(services) != 2 {
-		t.Errorf("Expected 2 services, got %d", len(services))
-	}
-
-	// Check that both services are in the list
-	hasOpenMeteo := false
-	hasWeatherAPI := false
-	for _, service := range services {
-		if service == "open-meteo" {
-			hasOpenMeteo = true
-		}
-		if service == "weather-api" {
-			hasWeatherAPI = true
-		}
-	}
-
-	if !hasOpenMeteo {
-		t.Error("open-meteo service should be in available services")
-	}
-
-	if !hasWeatherAPI {
-		t.Error("weather-api service should be in available services")
-	}
-
-	// Test GetServiceData
-	openMeteoData, exists := populatedData.GetServiceData("open-meteo")
-	if !exists {
-		t.Error("Should find open-meteo service data")
-	}
-
-	if openMeteoData["temperature"] != 20.5 {
-		t.Errorf("Expected temperature 20.5, got %v", openMeteoData["temperature"])
-	}
-
-	if openMeteoData["humidity"] != 65 {
-		t.Errorf("Expected humidity 65, got %v", openMeteoData["humidity"])
-	}
-
-	weatherAPIData, exists := populatedData.GetServiceData("weather-api")
-	if !exists {
-		t.Error("Should find weather-api service data")
-	}
-
-	if weatherAPIData["temp"] != 22.0 {
-		t.Errorf("Expected temp 22.0, got %v", weatherAPIData["temp"])
-	}
-
-	if weatherAPIData["hum"] != 60 {
-		t.Errorf("Expected hum 60, got %v", weatherAPIData["hum"])
 	}
 }

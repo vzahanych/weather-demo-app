@@ -1,31 +1,26 @@
 package aggregator
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/vzahanych/weather-demo-app/internal/config"
 	"github.com/vzahanych/weather-demo-app/internal/service"
+	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
 )
 
-var (
-	integratedServices = map[string]bool{
-		"open-meteo":  true,
-		"weather-api": true,
-	}
-)
-
-// AggregatedWeatherData represents flexible weather data from multiple services
-type AggregatedWeatherData struct {
-	Services  map[string]interface{} `json:"services,omitempty"`
+type WeatherData struct {
+	Services  map[string]interface{} `json:"services"`
 	Timestamp string                 `json:"timestamp"`
 }
 
 type CacheEntry struct {
-	Data      *AggregatedWeatherData
+	Data      *WeatherData
 	Timestamp time.Time
-	TTL       time.Duration
 }
 
 type Aggregator struct {
@@ -33,117 +28,194 @@ type Aggregator struct {
 	cache    map[string]*CacheEntry
 	mutex    sync.RWMutex
 	cacheTTL time.Duration
+	logger   *zap.Logger
+	tele     *telemetry.Telemetry
+	metrics  MetricsRecorder
 }
 
-func NewAggregator(cfg *config.WeatherConfig) *Aggregator {
+// MetricsRecorder interface for recording metrics
+type MetricsRecorder interface {
+	RecordCacheHit(ctx context.Context, cacheType string)
+	RecordCacheMiss(ctx context.Context, cacheType string)
+}
+
+func NewAggregator(cfg *config.WeatherConfig, logger *zap.Logger, tele *telemetry.Telemetry) *Aggregator {
 	agg := &Aggregator{
 		services: make(map[string]service.WeatherService),
 		cache:    make(map[string]*CacheEntry),
 		cacheTTL: time.Duration(cfg.CacheTTL) * time.Second,
+		logger:   logger,
+		tele:     tele,
 	}
 
-	agg.registerServicesFromConfig(cfg)
-	return agg
-}
-
-func (a *Aggregator) registerServicesFromConfig(cfg *config.WeatherConfig) {
-	enabledServices := cfg.GetEnabledServices()
-
-	for name, serviceConfig := range enabledServices {
-		if !integratedServices[name] {
+	for name, serviceConfig := range cfg.Services {
+		if !serviceConfig.Enabled {
 			continue
 		}
 
-		service := a.createServiceFromConfig(name, serviceConfig)
-		if service != nil {
-			a.RegisterService(service)
+		svc := agg.createService(name, serviceConfig, logger, tele)
+		if svc != nil {
+			agg.services[name] = svc
+			agg.logger.Info("Registered weather service", zap.String("service", name))
 		}
 	}
+
+	return agg
 }
 
-func (a *Aggregator) createServiceFromConfig(name string, cfg config.WeatherServiceConfig) service.WeatherService {
-	switch name {
+// SetMetricsRecorder sets the metrics recorder for the aggregator
+func (a *Aggregator) SetMetricsRecorder(metrics MetricsRecorder) {
+	a.metrics = metrics
+}
+
+func (a *Aggregator) createService(name string, cfg config.WeatherServiceConfig, logger *zap.Logger, tele *telemetry.Telemetry) service.WeatherService {
+	switch cfg.Type {
 	case "open-meteo":
-		return service.NewOpenMeteoServiceWithConfig(cfg)
+		return service.NewOpenMeteoServiceWithConfig(cfg, logger, tele)
 	case "weather-api":
-		return service.NewWeatherAPIServiceWithConfig(cfg)
+		return service.NewWeatherAPIServiceWithConfig(cfg, logger, tele)
 	default:
+		logger.Warn("Unknown service type", zap.String("type", cfg.Type), zap.String("service", name))
 		return nil
 	}
 }
 
-func (a *Aggregator) RegisterService(service service.WeatherService) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
-	a.services[service.Name()] = service
-}
+func (a *Aggregator) GetWeatherData(ctx context.Context, lat, lon float64) (*WeatherData, error) {
+	tracer := a.tele.GetTracer()
+	ctx, span := tracer.Start(ctx, "aggregator.GetWeatherData")
+	defer span.End()
 
-func (a *Aggregator) GetWeatherData(lat, lon float64) (*AggregatedWeatherData, error) {
+	// Extract request ID from context for correlated logging
+	requestID := ""
+	if reqID := ctx.Value("request_id"); reqID != nil {
+		if id, ok := reqID.(string); ok {
+			requestID = id
+		}
+	}
+
+	// Create logger with request ID
+	reqLogger := a.logger
+	if requestID != "" {
+		reqLogger = a.logger.With(zap.String("request_id", requestID))
+	}
+
+	span.SetAttributes(
+		attribute.Float64("lat", lat),
+		attribute.Float64("lon", lon),
+	)
+
 	cacheKey := fmt.Sprintf("%.6f,%.6f", lat, lon)
 
+	reqLogger.Debug("Weather data requested",
+		zap.Float64("lat", lat),
+		zap.Float64("lon", lon),
+		zap.String("cache_key", cacheKey))
+
 	if cached := a.getFromCache(cacheKey); cached != nil {
+		reqLogger.Debug("Cache hit", zap.String("cache_key", cacheKey))
+		span.SetAttributes(attribute.Bool("cache_hit", true))
+
+		if a.metrics != nil {
+			a.metrics.RecordCacheHit(ctx, "weather_data")
+		}
+
 		return cached, nil
 	}
 
-	data, err := a.fetchWeatherData(lat, lon)
+	span.SetAttributes(attribute.Bool("cache_hit", false))
+
+	if a.metrics != nil {
+		a.metrics.RecordCacheMiss(ctx, "weather_data")
+	}
+
+	reqLogger.Info("Cache miss, fetching fresh data",
+		zap.String("cache_key", cacheKey),
+		zap.Int("enabled_services", len(a.services)))
+
+	data, err := a.fetchWeatherData(ctx, lat, lon)
 	if err != nil {
+		span.SetAttributes(attribute.Bool("success", false))
+		reqLogger.Error("Failed to fetch weather data",
+			zap.Error(err),
+			zap.String("cache_key", cacheKey))
 		return nil, err
 	}
 
 	a.setCache(cacheKey, data)
+	span.SetAttributes(
+		attribute.Bool("success", true),
+		attribute.Int("services_count", len(data.Services)),
+	)
+
+	reqLogger.Info("Weather data fetched and cached",
+		zap.String("cache_key", cacheKey),
+		zap.Int("services_count", len(data.Services)))
+
 	return data, nil
 }
 
-func (a *Aggregator) fetchWeatherData(lat, lon float64) (*AggregatedWeatherData, error) {
+func (a *Aggregator) fetchWeatherData(ctx context.Context, lat, lon float64) (*WeatherData, error) {
+	tracer := a.tele.GetTracer()
+	ctx, span := tracer.Start(ctx, "aggregator.fetchWeatherData")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Float64("lat", lat),
+		attribute.Float64("lon", lon),
+		attribute.Int("services_count", len(a.services)),
+	)
+
 	a.mutex.RLock()
-	services := make(map[string]service.WeatherService, len(a.services))
-	for name, service := range a.services {
-		services[name] = service
+	services := make(map[string]service.WeatherService)
+	for name, svc := range a.services {
+		services[name] = svc
 	}
 	a.mutex.RUnlock()
 
 	var wg sync.WaitGroup
 	results := make(map[string]map[string]interface{})
-	errors := make(map[string]error)
 	resultMutex := sync.Mutex{}
 
-	for name, srv := range services {
+	for name, svc := range services {
 		wg.Add(1)
-		go func(serviceName string, weatherService service.WeatherService) {
+		go func(serviceName string, weatherService interface {
+			Get5DayForecast(ctx context.Context, lat, lon float64) (map[string]interface{}, error)
+		}) {
 			defer wg.Done()
 
-			data, err := weatherService.Get5DayForecast(lat, lon)
-			resultMutex.Lock()
-			defer resultMutex.Unlock()
-
-			if err != nil {
-				errors[serviceName] = err
-			} else {
+			data, err := weatherService.Get5DayForecast(ctx, lat, lon)
+			if err == nil {
+				resultMutex.Lock()
 				results[serviceName] = data
+				resultMutex.Unlock()
 			}
-		}(name, srv)
+		}(name, svc)
 	}
 
-	// Wait for all services to complete either successfully or with an error
 	wg.Wait()
 
-	aggregated := &AggregatedWeatherData{
-		Services:  make(map[string]interface{}),
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	if len(results) == 0 {
+		span.SetAttributes(attribute.Bool("success", false))
+		return nil, fmt.Errorf("no weather data available")
 	}
 
+	servicesData := make(map[string]interface{})
 	for name, data := range results {
-		aggregated.Services[name] = data
+		servicesData[name] = data
 	}
 
-	if len(errors) > 0 {
-		return aggregated, fmt.Errorf("some services failed: %v", errors)
-	}
+	span.SetAttributes(
+		attribute.Bool("success", true),
+		attribute.Int("results_count", len(results)),
+	)
 
-	return aggregated, nil
+	return &WeatherData{
+		Services:  servicesData,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
 
-func (a *Aggregator) getFromCache(key string) *AggregatedWeatherData {
+func (a *Aggregator) getFromCache(key string) *WeatherData {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
 
@@ -152,7 +224,7 @@ func (a *Aggregator) getFromCache(key string) *AggregatedWeatherData {
 		return nil
 	}
 
-	if time.Since(entry.Timestamp) > entry.TTL {
+	if time.Since(entry.Timestamp) > a.cacheTTL {
 		delete(a.cache, key)
 		return nil
 	}
@@ -160,14 +232,13 @@ func (a *Aggregator) getFromCache(key string) *AggregatedWeatherData {
 	return entry.Data
 }
 
-func (a *Aggregator) setCache(key string, data *AggregatedWeatherData) {
+func (a *Aggregator) setCache(key string, data *WeatherData) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
 	a.cache[key] = &CacheEntry{
 		Data:      data,
 		Timestamp: time.Now(),
-		TTL:       a.cacheTTL,
 	}
 }
 
@@ -181,46 +252,14 @@ func (a *Aggregator) GetCacheStats() map[string]interface{} {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
 
+	enabledServices := make([]string, 0, len(a.services))
+	for name := range a.services {
+		enabledServices = append(enabledServices, name)
+	}
+
 	return map[string]interface{}{
-		"cache_size": len(a.cache),
-		"cache_ttl":  a.cacheTTL.String(),
+		"cache_size":       len(a.cache),
+		"cache_ttl":        a.cacheTTL.String(),
+		"enabled_services": enabledServices,
 	}
-}
-
-// GetServiceData returns weather data for a specific service
-func (data *AggregatedWeatherData) GetServiceData(serviceName string) (map[string]interface{}, bool) {
-	if data.Services == nil {
-		return nil, false
-	}
-	serviceData, exists := data.Services[serviceName]
-	if !exists {
-		return nil, false
-	}
-
-	if result, ok := serviceData.(map[string]interface{}); ok {
-		return result, true
-	}
-	return nil, false
-}
-
-// GetAvailableServices returns a list of available service names
-func (data *AggregatedWeatherData) GetAvailableServices() []string {
-	if data.Services == nil {
-		return []string{}
-	}
-
-	services := make([]string, 0, len(data.Services))
-	for serviceName := range data.Services {
-		services = append(services, serviceName)
-	}
-	return services
-}
-
-// HasService checks if data from a specific service is available
-func (data *AggregatedWeatherData) HasService(serviceName string) bool {
-	if data.Services == nil {
-		return false
-	}
-	_, exists := data.Services[serviceName]
-	return exists
 }

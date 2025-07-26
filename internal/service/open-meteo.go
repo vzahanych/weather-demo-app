@@ -1,37 +1,34 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
 	"github.com/vzahanych/weather-demo-app/internal/config"
+	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
 )
 
 type OpenMeteoService struct {
 	baseURL string
 	client  *http.Client
-	params  map[string]string
+	logger  *zap.Logger
+	tele    *telemetry.Telemetry
 }
 
-type OpenMeteoDay struct {
-	Date           string  `json:"date"`
-	MaxTemperature float64 `json:"max_temperature"`
-	MinTemperature float64 `json:"min_temperature"`
-	Precipitation  float64 `json:"precipitation"`
-	WeatherCode    int     `json:"weather_code"`
-}
-
-func NewOpenMeteoServiceWithConfig(cfg config.WeatherServiceConfig) *OpenMeteoService {
+func NewOpenMeteoServiceWithConfig(cfg config.WeatherServiceConfig, logger *zap.Logger, tele *telemetry.Telemetry) *OpenMeteoService {
 	return &OpenMeteoService{
 		baseURL: cfg.BaseURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		params: cfg.Params,
+		logger: logger,
+		tele:   tele,
 	}
 }
 
@@ -39,63 +36,86 @@ func (s *OpenMeteoService) Name() string {
 	return "open-meteo"
 }
 
-func (s *OpenMeteoService) Get5DayForecast(lat, lon float64) (map[string]interface{}, error) {
-	results := make(map[string]interface{})
+func (s *OpenMeteoService) Get5DayForecast(ctx context.Context, lat, lon float64) (map[string]interface{}, error) {
+	tracer := s.tele.GetTracer()
+	ctx, span := tracer.Start(ctx, "open-meteo.Get5DayForecast")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Float64("lat", lat),
+		attribute.Float64("lon", lon),
+		attribute.String("service", "open-meteo"),
+	)
+
+	s.logger.Debug("Fetching 5-day forecast from Open-Meteo",
+		zap.Float64("lat", lat),
+		zap.Float64("lon", lon))
+
 	var wg sync.WaitGroup
-	var mu sync.Mutex
+	results := make(map[string]interface{})
+	mu := sync.Mutex{}
+
+	now := time.Now()
 
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func(dayOffset int) {
+		go func(day int) {
 			defer wg.Done()
 
-			date := time.Now().AddDate(0, 0, dayOffset).Format("2006-01-02")
-			dayData, err := s.fetchDayForecast(lat, lon, date)
+			date := now.AddDate(0, 0, day)
+			dateStr := date.Format("2006-01-02")
 
-			mu.Lock()
-			defer mu.Unlock()
+			// Create child span for each day fetch
+			tracer := s.tele.GetTracer()
+			_, daySpan := tracer.Start(ctx, "open-meteo.fetchDayForecast")
+			daySpan.SetAttributes(
+				attribute.String("date", dateStr),
+				attribute.Int("day", day+1),
+			)
 
-			if err != nil {
-				results[fmt.Sprintf("day%d", dayOffset+1)] = map[string]interface{}{
-					"error": err.Error(),
-					"date":  date,
-				}
+			data, err := s.fetchDayForecast(lat, lon, dateStr)
+			if err == nil {
+				mu.Lock()
+				results[fmt.Sprintf("day%d", day+1)] = data
+				mu.Unlock()
+				daySpan.SetAttributes(attribute.Bool("success", true))
 			} else {
-				results[fmt.Sprintf("day%d", dayOffset+1)] = dayData
+				s.logger.Warn("Failed to fetch day forecast",
+					zap.String("date", dateStr),
+					zap.Error(err))
+				daySpan.SetAttributes(
+					attribute.Bool("success", false),
+					attribute.String("error", err.Error()),
+				)
 			}
+			daySpan.End()
 		}(i)
 	}
 
 	wg.Wait()
+
+	span.SetAttributes(attribute.Int("days_fetched", len(results)))
+
+	s.logger.Info("Open-Meteo forecast completed",
+		zap.Int("days_fetched", len(results)),
+		zap.Float64("lat", lat),
+		zap.Float64("lon", lon))
+
 	return results, nil
 }
 
 func (s *OpenMeteoService) fetchDayForecast(lat, lon float64, date string) (map[string]interface{}, error) {
-	u, err := url.Parse(fmt.Sprintf("%s/forecast", s.baseURL))
-	if err != nil {
-		return nil, err
-	}
+	url := fmt.Sprintf("%s/forecast?latitude=%.6f&longitude=%.6f&start_date=%s&end_date=%s&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode",
+		s.baseURL, lat, lon, date, date)
 
-	q := u.Query()
-	q.Set("latitude", fmt.Sprintf("%.6f", lat))
-	q.Set("longitude", fmt.Sprintf("%.6f", lon))
-	q.Set("start_date", date)
-	q.Set("end_date", date)
-
-	for key, value := range s.params {
-		q.Set(key, value)
-	}
-
-	u.RawQuery = q.Encode()
-
-	resp, err := s.client.Get(u.String())
+	resp, err := s.client.Get(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
 	}
 
 	var result map[string]interface{}

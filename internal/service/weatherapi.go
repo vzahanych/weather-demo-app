@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,7 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/vzahanych/weather-demo-app/internal/config"
+	"github.com/vzahanych/weather-demo-app/pkg/telemetry"
+	"go.uber.org/zap"
 )
 
 type WeatherAPIService struct {
@@ -16,6 +21,8 @@ type WeatherAPIService struct {
 	apiKey  string
 	client  *http.Client
 	params  map[string]string
+	logger  *zap.Logger
+	tele    *telemetry.Telemetry
 }
 
 type WeatherAPIDay struct {
@@ -26,7 +33,7 @@ type WeatherAPIDay struct {
 	WeatherCode    int     `json:"weather_code"`
 }
 
-func NewWeatherAPIServiceWithConfig(cfg config.WeatherServiceConfig) *WeatherAPIService {
+func NewWeatherAPIServiceWithConfig(cfg config.WeatherServiceConfig, logger *zap.Logger, tele *telemetry.Telemetry) *WeatherAPIService {
 	return &WeatherAPIService{
 		baseURL: cfg.BaseURL,
 		apiKey:  cfg.APIKey,
@@ -34,6 +41,8 @@ func NewWeatherAPIServiceWithConfig(cfg config.WeatherServiceConfig) *WeatherAPI
 			Timeout: 10 * time.Second,
 		},
 		params: cfg.Params,
+		logger: logger,
+		tele:   tele,
 	}
 }
 
@@ -41,12 +50,33 @@ func (s *WeatherAPIService) Name() string {
 	return "weather-api"
 }
 
-func (s *WeatherAPIService) Get5DayForecast(lat, lon float64) (map[string]interface{}, error) {
+func (s *WeatherAPIService) Get5DayForecast(ctx context.Context, lat, lon float64) (map[string]interface{}, error) {
+	tracer := s.tele.GetTracer()
+	ctx, span := tracer.Start(ctx, "weather-api.Get5DayForecast")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Float64("lat", lat),
+		attribute.Float64("lon", lon),
+		attribute.String("service", "weather-api"),
+	)
+
 	if s.apiKey == "" {
+		s.logger.Warn("WeatherAPI service called without API key",
+			zap.Float64("lat", lat),
+			zap.Float64("lon", lon))
+		span.SetAttributes(
+			attribute.Bool("success", false),
+			attribute.String("error", "API key not configured"),
+		)
 		return map[string]interface{}{
 			"error": "WeatherAPI requires API key to be configured",
 		}, nil
 	}
+
+	s.logger.Debug("Fetching 5-day forecast from WeatherAPI",
+		zap.Float64("lat", lat),
+		zap.Float64("lon", lon))
 
 	results := make(map[string]interface{})
 	var wg sync.WaitGroup
@@ -58,23 +88,49 @@ func (s *WeatherAPIService) Get5DayForecast(lat, lon float64) (map[string]interf
 			defer wg.Done()
 
 			date := time.Now().AddDate(0, 0, dayOffset).Format("2006-01-02")
+
+			// Create child span for each day fetch
+			tracer := s.tele.GetTracer()
+			_, daySpan := tracer.Start(ctx, "weather-api.fetchDayForecast")
+			daySpan.SetAttributes(
+				attribute.String("date", date),
+				attribute.Int("day", dayOffset+1),
+			)
+
 			dayData, err := s.fetchDayForecast(lat, lon, date)
 
 			mu.Lock()
 			defer mu.Unlock()
 
 			if err != nil {
+				s.logger.Warn("Failed to fetch day forecast from WeatherAPI",
+					zap.String("date", date),
+					zap.Error(err))
+				daySpan.SetAttributes(
+					attribute.Bool("success", false),
+					attribute.String("error", err.Error()),
+				)
 				results[fmt.Sprintf("day%d", dayOffset+1)] = map[string]interface{}{
 					"error": err.Error(),
 					"date":  date,
 				}
 			} else {
+				daySpan.SetAttributes(attribute.Bool("success", true))
 				results[fmt.Sprintf("day%d", dayOffset+1)] = dayData
 			}
+			daySpan.End()
 		}(i)
 	}
 
 	wg.Wait()
+
+	span.SetAttributes(attribute.Int("days_fetched", len(results)))
+
+	s.logger.Info("WeatherAPI forecast completed",
+		zap.Int("days_fetched", len(results)),
+		zap.Float64("lat", lat),
+		zap.Float64("lon", lon))
+
 	return results, nil
 }
 
