@@ -26,12 +26,12 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
-	cfg := config.NewDefaultConfig()
-	if configPath != "" {
-		if loadedCfg, err := config.Load(configPath); err == nil {
-			cfg = loadedCfg
-		}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
 	}
+	
+	// config is set to atomic to be able to change it without downtime
 	config.SetConfig(cfg)
 
 	logger, err := logger.NewZapLogger(cfg.Logging)
@@ -40,14 +40,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	defer logger.Sync()
 
-	logger.Info("Starting server", zap.Int("port", cfg.Server.Port))
-
 	tele, err := telemetry.New(cmd.Context(), cfg.Telemetry)
 	if err != nil {
 		logger.Error("Failed to initialize telemetry", zap.Error(err))
 		return err
 	}
 	defer tele.Shutdown(cmd.Context())
+
+	logger.Info("Starting server", zap.Int("port", cfg.Server.Port))
 
 	srv := server.NewServer(logger, tele)
 

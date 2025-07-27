@@ -43,13 +43,13 @@ func New(ctx context.Context, cfg config.TelemetryConfig) (*Telemetry, error) {
 }
 
 func (t *Telemetry) initTracer(ctx context.Context, endpoint string) error {
-	conn, err := grpc.DialContext(ctx, endpoint,
+	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC connection: %w", err)
 	}
+	defer conn.Close()
 
 	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {

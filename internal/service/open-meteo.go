@@ -73,6 +73,11 @@ func (s *OpenMeteoService) Get5DayForecast(ctx context.Context, lat, lon float64
 				attribute.Int("day", day+1),
 			)
 
+			s.logger.Debug("Fetching day forecast",
+				zap.String("date", dateStr),
+				zap.Int("day", day+1),
+			)
+
 			data, err := s.fetchDayForecast(lat, lon, dateStr)
 			if err == nil {
 				mu.Lock()

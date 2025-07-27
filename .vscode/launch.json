@@ -13,7 +13,7 @@
       "args": ["server"],
       "env": {
         "WDP_ENVIRONMENT": "dev",
-        "WDP_VERSION": "0.0.1"
+        "WDP_VERSION": "0.0.1",
       }
     }
   ]

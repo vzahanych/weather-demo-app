@@ -1,0 +1,74 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Dependencies
+vendor/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+data/
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Docker files (not needed inside container)
+Dockerfile*
+docker-compose*.yml
+compose.yml
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Test files
+*_test.go
+testdata/
+
+# Makefile (not needed in container)
+Makefile
+
+# Examples and samples
+examples/
+samples/ 

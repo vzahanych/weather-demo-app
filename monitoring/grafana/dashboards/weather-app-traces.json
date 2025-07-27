@@ -1,0 +1,180 @@
+{
+  "id": null,
+  "title": "Weather Demo App - Traces",
+  "tags": [
+    "weather-app",
+    "traces"
+  ],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Trace Volume",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(traces_received_total[5m])",
+          "legendFormat": "Traces/sec",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "yAxes": [
+        {
+          "label": "Traces/sec",
+          "show": true
+        },
+        {
+          "show": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Span Duration Distribution",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(span_duration_seconds_bucket[5m]))",
+          "legendFormat": "95th percentile",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(span_duration_seconds_bucket[5m]))",
+          "legendFormat": "50th percentile",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "yAxes": [
+        {
+          "label": "Duration (s)",
+          "show": true
+        },
+        {
+          "show": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Service Map",
+      "type": "nodeGraph",
+      "targets": [
+        {
+          "expr": "rate(traces_service_graph_request_total[5m])",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "options": {
+        "nodes": {
+          "mainStatUnit": "short",
+          "secondaryStatUnit": "short",
+          "arcs": [
+            {
+              "field": "success_rate",
+              "color": "green"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Request Traces",
+      "type": "table",
+      "targets": [
+        {
+          "expr": "topk(20, rate(span_duration_seconds_count{span_name=~\".*weather.*\"}[5m]))",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": {
+              "span_name": "Span Name",
+              "Value": "Rate"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Aggregator Task Traces",
+      "type": "table",
+      "targets": [
+        {
+          "expr": "topk(20, rate(span_duration_seconds_count{span_name=~\".*aggregator.*\"}[5m]))",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": {
+              "span_name": "Span Name",
+              "Value": "Rate"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "schemaVersion": 30,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "query": "label_values(span_duration_seconds_count, service_name)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  }
+}

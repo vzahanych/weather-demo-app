@@ -1,0 +1,143 @@
+{
+  "id": null,
+  "title": "Weather Demo App - Overview",
+  "tags": ["weather-app", "overview"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Application Status",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "up{job=\"weather-app\"}",
+          "legendFormat": "App Status",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"text": "DOWN", "color": "red"}}, "type": "value"},
+            {"options": {"1": {"text": "UP", "color": "green"}}, "type": "value"}
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Weather Service Calls",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(weather_service_calls_total{job=\"weather-app\"}[5m])",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0},
+      "yAxes": [
+        {"label": "Calls/sec", "show": true},
+        {"show": false}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Weather Service Errors",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(weather_service_errors_total{job=\"weather-app\"}[5m])",
+          "legendFormat": "{{service}} errors",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 18, "y": 0},
+      "yAxes": [
+        {"label": "Errors/sec", "show": true},
+        {"show": false}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Cache Hit Rate",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(aggregator_cache_hits_total{job=\"weather-app\"}[5m]) / (rate(aggregator_cache_hits_total{job=\"weather-app\"}[5m]) + rate(aggregator_cache_miss_total{job=\"weather-app\"}[5m])) * 100",
+          "legendFormat": "Hit Rate %",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 4},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Cache Operations",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "rate(aggregator_cache_hits_total{job=\"weather-app\"}[5m])",
+          "legendFormat": "Cache Hits",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(aggregator_cache_miss_total{job=\"weather-app\"}[5m])",
+          "legendFormat": "Cache Misses",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 8},
+      "yAxes": [
+        {"label": "Operations/sec", "show": true},
+        {"show": false}
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Recent Application Logs",
+      "type": "logs",
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "{container=\"weather-demo-app\"} |= \"\"",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 16},
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true
+      }
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "schemaVersion": 30,
+  "version": 1
+}

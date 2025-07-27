@@ -13,6 +13,37 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	workers = 5 // just a default value, can be overridden by config
+)
+
+// There is an affort to implement throttling
+// That should be tested and probably refactored
+type HandlerTimeoutError struct {
+	Message string
+	Timeout time.Duration
+}
+
+func (e *HandlerTimeoutError) Error() string {
+	return e.Message
+}
+
+func (e *HandlerTimeoutError) IsTimeout() bool {
+	return true
+}
+
+type QueueFullError struct {
+	Message string
+}
+
+func (e *QueueFullError) Error() string {
+	return e.Message
+}
+
+func (e *QueueFullError) IsOverloaded() bool {
+	return true
+}
+
 type WeatherData struct {
 	Services  map[string]interface{} `json:"services"`
 	Timestamp string                 `json:"timestamp"`
@@ -23,29 +54,75 @@ type CacheEntry struct {
 	Timestamp time.Time
 }
 
-type Aggregator struct {
-	services map[string]service.WeatherService
-	cache    map[string]*CacheEntry
-	mutex    sync.RWMutex
-	cacheTTL time.Duration
-	logger   *zap.Logger
-	tele     *telemetry.Telemetry
-	metrics  MetricsRecorder
+// Task represents a weather data fetch task 
+// (I think this is the right place for it, but not 100% sure, 
+// TODO: revisit if we need more fields here)
+type Task struct {
+	ID        string
+	Lat       float64
+	Lon       float64
+	Context   context.Context
+	ResultCh  chan TaskResult
+	CreatedAt time.Time
 }
 
-// MetricsRecorder interface for recording metrics
+
+type TaskResult struct {
+	Data  *WeatherData
+	Error error
+}
+
+// Aggregator is supposed to be a singleton,
+// It should have a logic for autorecovering from panics
+// TODO: revisit to make it more stable
+type Aggregator struct {
+	services   map[string]service.WeatherService
+	cache      map[string]*CacheEntry
+	cacheMutex sync.RWMutex
+	cacheTTL   time.Duration
+	logger     *zap.Logger
+	tele       *telemetry.Telemetry
+	metrics    MetricsRecorder
+
+	// Worker pool components
+	taskQueue    chan *Task
+	workers      int
+	workerWg     sync.WaitGroup
+	shutdownCh   chan struct{}
+	isRunning    bool
+	runningMutex sync.RWMutex
+
+	// Request deduplication
+	pendingTasks map[string][]*Task
+	pendingMutex sync.Mutex
+}
+
+// Metrics is broken right now
+// It is not visible in Grafana
+// TODO: fix it
 type MetricsRecorder interface {
 	RecordCacheHit(ctx context.Context, cacheType string)
 	RecordCacheMiss(ctx context.Context, cacheType string)
+	RecordHandlerTimeout(ctx context.Context, reason string)
+	RecordQueueFull(ctx context.Context)
 }
 
 func NewAggregator(cfg *config.WeatherConfig, logger *zap.Logger, tele *telemetry.Telemetry) *Aggregator {
+	
+	if cfg.Workers > 0 {
+		workers = cfg.Workers
+	}
+
 	agg := &Aggregator{
-		services: make(map[string]service.WeatherService),
-		cache:    make(map[string]*CacheEntry),
-		cacheTTL: time.Duration(cfg.CacheTTL) * time.Second,
-		logger:   logger,
-		tele:     tele,
+		services:     make(map[string]service.WeatherService),
+		cache:        make(map[string]*CacheEntry),
+		cacheTTL:     time.Duration(cfg.CacheTTL) * time.Second,
+		logger:       logger,
+		tele:         tele,
+		taskQueue:    make(chan *Task, 100),
+		workers:      workers,
+		shutdownCh:   make(chan struct{}),
+		pendingTasks: make(map[string][]*Task),
 	}
 
 	for name, serviceConfig := range cfg.Services {
@@ -63,7 +140,81 @@ func NewAggregator(cfg *config.WeatherConfig, logger *zap.Logger, tele *telemetr
 	return agg
 }
 
-// SetMetricsRecorder sets the metrics recorder for the aggregator
+// Start begins the just worker pool
+// TODO: add logic for autorecovering from panics
+func (a *Aggregator) Start(ctx context.Context) error {
+	a.runningMutex.Lock()
+	defer a.runningMutex.Unlock()
+
+	if a.isRunning {
+		return fmt.Errorf("aggregator is already running")
+	}
+
+	a.logger.Info("Starting aggregator worker pool", zap.Int("workers", a.workers))
+
+	for i := 0; i < a.workers; i++ {
+		a.workerWg.Add(1)
+		worker := NewAggregatorWorker(a, i)
+		go worker.Start(ctx)
+	}
+
+	a.isRunning = true
+	return nil
+}
+
+func (a *Aggregator) Stop(ctx context.Context) error {
+	a.runningMutex.Lock()
+	defer a.runningMutex.Unlock()
+
+	if !a.isRunning {
+		return nil
+	}
+
+	a.logger.Info("Stopping aggregator worker pool")
+
+	close(a.shutdownCh)
+	close(a.taskQueue)
+
+	done := make(chan struct{})
+	go func() {
+		a.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		a.logger.Info("All workers stopped gracefully")
+	case <-ctx.Done():
+		a.logger.Warn("Worker shutdown timeout")
+	}
+
+	a.isRunning = false
+	return nil
+}
+
+// That is part of the request deduplication logic
+// The main idea is to avoid server overload
+// TODO: need to be carefully tested  under load
+func (a *Aggregator) notifyPendingTasks(taskKey string, result TaskResult) {
+	a.pendingMutex.Lock() 
+	defer a.pendingMutex.Unlock()
+
+	tasks, exists := a.pendingTasks[taskKey]
+	if !exists {
+		return
+	}
+
+	for _, task := range tasks {
+		select {
+		case task.ResultCh <- result:
+		default:
+			// Can't write to the channel, skip this task
+		}
+	}
+
+	delete(a.pendingTasks, taskKey)
+}
+
 func (a *Aggregator) SetMetricsRecorder(metrics MetricsRecorder) {
 	a.metrics = metrics
 }
@@ -75,7 +226,7 @@ func (a *Aggregator) createService(name string, cfg config.WeatherServiceConfig,
 	case "weather-api":
 		return service.NewWeatherAPIServiceWithConfig(cfg, logger, tele)
 	default:
-		logger.Warn("Unknown service type", zap.String("type", cfg.Type), zap.String("service", name))
+		logger.Warn("Given service isnot integrated", zap.String("type", cfg.Type), zap.String("service", name))
 		return nil
 	}
 }
@@ -85,7 +236,7 @@ func (a *Aggregator) GetWeatherData(ctx context.Context, lat, lon float64) (*Wea
 	ctx, span := tracer.Start(ctx, "aggregator.GetWeatherData")
 	defer span.End()
 
-	// Extract request ID from context for correlated logging
+	// No time to make that smatter yet	
 	requestID := ""
 	if reqID := ctx.Value("request_id"); reqID != nil {
 		if id, ok := reqID.(string); ok {
@@ -93,7 +244,6 @@ func (a *Aggregator) GetWeatherData(ctx context.Context, lat, lon float64) (*Wea
 		}
 	}
 
-	// Create logger with request ID
 	reqLogger := a.logger
 	if requestID != "" {
 		reqLogger = a.logger.With(zap.String("request_id", requestID))
@@ -111,6 +261,9 @@ func (a *Aggregator) GetWeatherData(ctx context.Context, lat, lon float64) (*Wea
 		zap.Float64("lon", lon),
 		zap.String("cache_key", cacheKey))
 
+	// Our cache is vary simple just for  demo purposes
+	// Maybe we might cache single days to make less requests to the services
+	// TODO: revisit that
 	if cached := a.getFromCache(cacheKey); cached != nil {
 		reqLogger.Debug("Cache hit", zap.String("cache_key", cacheKey))
 		span.SetAttributes(attribute.Bool("cache_hit", true))
@@ -128,30 +281,134 @@ func (a *Aggregator) GetWeatherData(ctx context.Context, lat, lon float64) (*Wea
 		a.metrics.RecordCacheMiss(ctx, "weather_data")
 	}
 
-	reqLogger.Info("Cache miss, fetching fresh data",
-		zap.String("cache_key", cacheKey),
-		zap.Int("enabled_services", len(a.services)))
+	a.runningMutex.RLock()
+	isRunning := a.isRunning
+	a.runningMutex.RUnlock()
 
-	data, err := a.fetchWeatherData(ctx, lat, lon)
-	if err != nil {
-		span.SetAttributes(attribute.Bool("success", false))
-		reqLogger.Error("Failed to fetch weather data",
-			zap.Error(err),
-			zap.String("cache_key", cacheKey))
-		return nil, err
+	if !isRunning {
+		return nil, fmt.Errorf("aggregator worker pool is not running")
 	}
 
-	a.setCache(cacheKey, data)
-	span.SetAttributes(
-		attribute.Bool("success", true),
-		attribute.Int("services_count", len(data.Services)),
-	)
+	cfg := config.GetConfig()
+	handlerTimeout := time.Duration(cfg.Weather.HandlerTimeout) * time.Second
 
-	reqLogger.Info("Weather data fetched and cached",
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, handlerTimeout)
+	defer timeoutCancel()
+
+	a.pendingMutex.Lock()
+
+	// Check if there's already a pending task for these coordinates
+	if existingTasks, exists := a.pendingTasks[cacheKey]; exists {
+		// Add this request to the pending list
+		task := &Task{
+			ID:        fmt.Sprintf("%s-%d", cacheKey, len(existingTasks)),
+			Lat:       lat,
+			Lon:       lon,
+			Context:   timeoutCtx,
+			ResultCh:  make(chan TaskResult, 1),
+			CreatedAt: time.Now(),
+		}
+
+		a.pendingTasks[cacheKey] = append(existingTasks, task)
+		a.pendingMutex.Unlock()
+
+		reqLogger.Debug("Joining existing task",
+			zap.String("cache_key", cacheKey),
+			zap.Duration("timeout", handlerTimeout))
+
+		// Wait for the result with timeout
+		select {
+		case result := <-task.ResultCh:
+			return result.Data, result.Error
+		case <-timeoutCtx.Done():
+			reqLogger.Warn("Handler timeout while waiting for existing task",
+				zap.String("cache_key", cacheKey),
+				zap.Duration("timeout", handlerTimeout))
+			if a.metrics != nil {
+				a.metrics.RecordHandlerTimeout(ctx, "existing_task")
+			}
+			return nil, &HandlerTimeoutError{
+				Message: "request timeout: server is overloaded",
+				Timeout: handlerTimeout,
+			}
+		}
+	}
+
+	task := &Task{
+		ID:        cacheKey,
+		Lat:       lat,
+		Lon:       lon,
+		Context:   timeoutCtx,
+		ResultCh:  make(chan TaskResult, 1),
+		CreatedAt: time.Now(),
+	}
+
+	a.pendingTasks[cacheKey] = []*Task{task}
+	a.pendingMutex.Unlock()
+
+	reqLogger.Debug("Cache miss, creating new task",
 		zap.String("cache_key", cacheKey),
-		zap.Int("services_count", len(data.Services)))
+		zap.Int("enabled_services", len(a.services)),
+		zap.Duration("timeout", handlerTimeout))
 
-	return data, nil
+	select {
+	case a.taskQueue <- task:
+	case <-timeoutCtx.Done():
+		a.pendingMutex.Lock()
+		delete(a.pendingTasks, cacheKey)
+		a.pendingMutex.Unlock()
+
+		reqLogger.Warn("Handler timeout while submitting task",
+			zap.String("cache_key", cacheKey),
+			zap.Duration("timeout", handlerTimeout))
+		if a.metrics != nil {
+			a.metrics.RecordHandlerTimeout(ctx, "queue_submit")
+		}
+		return nil, &HandlerTimeoutError{
+			Message: "request timeout: server is overloaded",
+			Timeout: handlerTimeout,
+		}
+	default:
+		// Queue is full, lets trigger trottling
+		a.pendingMutex.Lock()
+		delete(a.pendingTasks, cacheKey)
+		a.pendingMutex.Unlock()
+
+		reqLogger.Error("Task queue is full", zap.String("cache_key", cacheKey))
+		if a.metrics != nil {
+			a.metrics.RecordQueueFull(ctx)
+		}
+		return nil, &QueueFullError{
+			Message: "server is overloaded, please try again later",
+		}
+	}
+
+
+	select {
+	case result := <-task.ResultCh:
+		if result.Error != nil {
+			reqLogger.Error("Task failed", zap.Error(result.Error))
+			return nil, result.Error
+		}
+
+		reqLogger.Info("Weather data fetched and cached",
+			zap.String("cache_key", cacheKey),
+			zap.Int("services_count", len(result.Data.Services)))
+
+		return result.Data, nil
+
+	case <-timeoutCtx.Done():
+		reqLogger.Warn("Handler timeout while waiting for task result",
+			zap.String("cache_key", cacheKey),
+			zap.Duration("timeout", handlerTimeout))
+		if a.metrics != nil {
+			a.metrics.RecordHandlerTimeout(ctx, "task_execution")
+		}
+		return nil, &HandlerTimeoutError{
+			Message: "request timeout: server is overloaded",
+			Timeout: handlerTimeout,
+		}
+	}
 }
 
 func (a *Aggregator) fetchWeatherData(ctx context.Context, lat, lon float64) (*WeatherData, error) {
@@ -165,17 +422,19 @@ func (a *Aggregator) fetchWeatherData(ctx context.Context, lat, lon float64) (*W
 		attribute.Int("services_count", len(a.services)),
 	)
 
-	a.mutex.RLock()
+	a.cacheMutex.RLock()
 	services := make(map[string]service.WeatherService)
 	for name, svc := range a.services {
 		services[name] = svc
 	}
-	a.mutex.RUnlock()
+	a.cacheMutex.RUnlock()
 
 	var wg sync.WaitGroup
 	results := make(map[string]map[string]interface{})
 	resultMutex := sync.Mutex{}
 
+	// TODO: add logic for retrying failed services
+	// maybe with attemtps and resonable exponential backoff
 	for name, svc := range services {
 		wg.Add(1)
 		go func(serviceName string, weatherService interface {
@@ -216,8 +475,8 @@ func (a *Aggregator) fetchWeatherData(ctx context.Context, lat, lon float64) (*W
 }
 
 func (a *Aggregator) getFromCache(key string) *WeatherData {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
+	a.cacheMutex.RLock()
+	defer a.cacheMutex.RUnlock()
 
 	entry, exists := a.cache[key]
 	if !exists {
@@ -233,8 +492,8 @@ func (a *Aggregator) getFromCache(key string) *WeatherData {
 }
 
 func (a *Aggregator) setCache(key string, data *WeatherData) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.cacheMutex.Lock()
+	defer a.cacheMutex.Unlock()
 
 	a.cache[key] = &CacheEntry{
 		Data:      data,
@@ -243,14 +502,14 @@ func (a *Aggregator) setCache(key string, data *WeatherData) {
 }
 
 func (a *Aggregator) ClearCache() {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.cacheMutex.Lock()
+	defer a.cacheMutex.Unlock()
 	a.cache = make(map[string]*CacheEntry)
 }
 
 func (a *Aggregator) GetCacheStats() map[string]interface{} {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
+	a.cacheMutex.RLock()
+	defer a.cacheMutex.RUnlock()
 
 	enabledServices := make([]string, 0, len(a.services))
 	for name := range a.services {

@@ -32,10 +32,12 @@ type ServerConfig struct {
 }
 
 type WeatherConfig struct {
-	Services map[string]WeatherServiceConfig `mapstructure:"services"`
-	Timeout  int                             `mapstructure:"timeout"`
-	Retries  int                             `mapstructure:"retries"`
-	CacheTTL int                             `mapstructure:"cache_ttl"`
+	Services       map[string]WeatherServiceConfig `mapstructure:"services"`
+	Timeout        int                             `mapstructure:"timeout"`
+	Retries        int                             `mapstructure:"retries"`
+	CacheTTL       int                             `mapstructure:"cache_ttl"`
+	Workers        int                             `mapstructure:"workers"`
+	HandlerTimeout int                             `mapstructure:"handler_timeout"`
 }
 
 type WeatherServiceConfig struct {
@@ -88,9 +90,11 @@ func NewDefaultConfig() *Config {
 					},
 				},
 			},
-			Timeout:  10,
-			Retries:  3,
-			CacheTTL: 300,
+			Timeout:        10,
+			Retries:        3,
+			CacheTTL:       300,
+			Workers:        5,
+			HandlerTimeout: 30, // 30 seconds max wait time for handlers
 		},
 		Logging: LoggingConfig{
 			Level:      "info",

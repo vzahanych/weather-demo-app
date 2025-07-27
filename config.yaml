@@ -4,14 +4,16 @@ environment: "development"
 server:
   port: 8080
   host: "0.0.0.0"
-  read_timeout: 30
-  write_timeout: 30
+  read_timeout: 300
+  write_timeout: 300
   idle_timeout: 60
 
 weather:
   timeout: 10
   retries: 3
   cache_ttl: 300
+  workers: 5
+  handler_timeout: 300
   services:
     open-meteo:
       type: "open-meteo"
@@ -22,9 +24,9 @@ weather:
     
     weather-api:
       type: "weather-api"
-      enabled: false
+      enabled: true
       base_url: "https://api.weatherapi.com/v1"
-      api_key: ""  # Set your API key here
+      api_key: "bae142db35a441f0b3c201154252607"  # Set your API key here
       params:
         format: "json"
     
@@ -46,10 +48,10 @@ weather:
     #     units: "metric"
 
 logging:
-  level: "info"
+  level: "debug"
   format: "json"
   output_path: ""
 
 telemetry:
-  enabled: false
+  enabled: true
   endpoint: "tempo:4317" 

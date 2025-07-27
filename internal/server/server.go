@@ -72,6 +72,12 @@ func (s *Server) setupRoutes() {
 func (s *Server) Start() error {
 	cfg := config.GetConfig()
 
+	// Start the aggregator worker pool
+	ctx := context.Background()
+	if err := s.agg.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start aggregator: %w", err)
+	}
+
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
 		Handler: s.engine,
@@ -82,12 +88,17 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Stop the aggregator worker pool first
+	if err := s.agg.Stop(ctx); err != nil {
+		s.logger.Error("Failed to stop aggregator gracefully", zap.Error(err))
+	}
+
 	if s.server == nil {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	return s.server.Shutdown(ctx)
 }

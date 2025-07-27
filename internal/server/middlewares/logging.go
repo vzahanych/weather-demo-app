@@ -20,6 +20,14 @@ func LoggingMiddleware(logger *zap.Logger, timeFormat string, utc bool) gin.Hand
 			}
 		}
 
+		logger.Debug("Request started",
+			zap.String("request_id", requestID),
+			zap.String("method", c.Request.Method),
+			zap.String("path", path),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.Request.UserAgent()),
+		)
+
 		c.Next()
 
 		param := gin.LogFormatterParams{

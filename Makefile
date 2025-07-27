@@ -1,50 +1,71 @@
-# TODO: Implement Makefile with common tasks
-# Variables
-BINARY_NAME=weather-app
-DOCKER_IMAGE=weather-app
+# Weather Demo App
+BINARY_NAME=weather-demo-app
 VERSION?=1.0.0
 
-# Go parameters
 GOCMD=go
 GOBUILD=$(GOCMD) build
-GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
-GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 
-# Build flags
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
+BUILD_DIR=./build
 
-.PHONY: all build clean test deps run docker-build docker-run help
+.PHONY: build clean test run docker help
 
-# TODO: Implement build target
+all: clean build
+
 build:
-	@echo "TODO: Implement build"
+	mkdir -p $(BUILD_DIR)
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./main.go
 
-# TODO: Implement clean target
 clean:
-	@echo "TODO: Implement clean"
+	$(GOCMD) clean
+	rm -rf $(BUILD_DIR)
 
-# TODO: Implement test target
 test:
-	@echo "TODO: Implement test"
+	$(GOTEST) -v ./...
 
-# TODO: Implement deps target
 deps:
-	@echo "TODO: Implement deps"
+	$(GOMOD) download
+	$(GOMOD) tidy
 
-# TODO: Implement run target
 run:
-	@echo "TODO: Implement run"
+	$(GOCMD) run main.go server --config config.yaml
 
-# TODO: Implement docker-build target
-docker-build:
-	@echo "TODO: Implement docker-build"
+fmt:
+	$(GOCMD) fmt ./...
 
-# TODO: Implement docker-run target
+docker:
+	docker build -t $(BINARY_NAME):$(VERSION) .
+
 docker-run:
-	@echo "TODO: Implement docker-run"
+	docker run --rm -p 8080:8080 -v $(PWD)/config.yaml:/app/config.yaml $(BINARY_NAME):$(VERSION)
 
-# TODO: Implement help target
+up:
+	docker compose -f compose.yml up -d
+
+down:
+	docker compose -f compose.yml down
+
+logs:
+	docker compose -f compose.yml logs -f weather-app
+
+dev: fmt build run
+
+quick: build run
+
 help:
-	@echo "TODO: Implement help" 
+	@echo "Available commands:"
+	@echo "  build    - Build the application"
+	@echo "  clean    - Clean build files"
+	@echo "  test     - Run tests"
+	@echo "  deps     - Update dependencies"
+	@echo "  run      - Run locally"
+	@echo "  fmt      - Format code"
+	@echo "  docker   - Build Docker image"
+	@echo "  docker-run - Run with Docker"
+	@echo "  up       - Start with docker-compose"
+	@echo "  down     - Stop docker-compose"
+	@echo "  logs     - Show app logs"
+	@echo "  dev      - Format, build and run"
+	@echo "  quick    - Build and run" 
